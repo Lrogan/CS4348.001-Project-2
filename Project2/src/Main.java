@@ -7,156 +7,246 @@ public class Main
 {
     public static void main(String[] args)
     {
-        Office run = new Office(3, 15);
-    }
-}
-
-class Office
-{
-    Semaphore workerReady;
-    Semaphore customerReady;
-    Semaphore scales;
-    Semaphore waiting;
-    Semaphore accessCustomerThreadName;
-    Semaphore accessWorkerThreadName;
-    Semaphore[] Finished;
-    Thread[] PostalWorkers;
-    Thread[] Customers;
-
-    String customerThreadName;
-    String workerThreadName;
-    String[] jobs = {"buy stamps", "mail a letter", "mail a package"};
-
-    public Office(int w, int c)
-    {
-        waiting = new Semaphore(10, true);
-        workerReady = new Semaphore(3, true);
-        customerReady = new Semaphore(0, true);
-        scales = new Semaphore(1, true);
-        accessCustomerThreadName = new Semaphore(1, true);
-        accessWorkerThreadName = new Semaphore(1, true);
-
-        PostalWorkers = new Thread[w];
-        Customers = new Thread[c];
-
-        customerThreadName = "";
-        workerThreadName = "";
-        Finished = new Semaphore[c];
-
-        System.out.println("Simulating Post Office with " + c + " customers and " + w + " postal workers");
-
-        //create worker threads
-        for(int i = 0; i < w; i++)
-        {
-            PostalWorkers[i] = new Thread(this::worker, Integer.toString(i));
-            PostalWorkers[i].start();
-        }
-
-        //create all customer threads with random jobs and populate Finished Semaphore[]
-        Random rand = new Random();
-        for(int i = 0; i < c; i++)
-        {
-            int jobIndex = rand.nextInt(3);
-            Customers[i] = new Thread(this::customer, Integer.toString(i) + " "  + (i % 3));
-            Finished[i] = new Semaphore(0);
-            Customers[i].start();
-        }
+        Setup run = new Setup();
+        run.startSetup();
     }
 
-    //Worker thread
-    public void worker()
+    public static class Setup
     {
-        long start = System.currentTimeMillis(); //used for timing
-        String custName = ""; //local variable to store global shared name
-
-        String name = Thread.currentThread().getName(); //parsing what thread this is
-        System.out.println("Postal Worker " + name + " created");
-
-        while(true)
+        public void startSetup()
         {
-            try
+            Office office = new Office(3,50);
+        }
+
+        public static class Office
+        {
+            Semaphore waiting;
+            Semaphore finished;
+
+            Semaphore workerReady;
+            Semaphore[] workerFreeList;
+            Semaphore[] workerStartList;
+            Semaphore workerGate;
+
+            Semaphore scale;
+
+            Job[] jobList;
+            final int[] rest = new int[]{1000, 1500, 2000};
+
+            public Office(int w, int c)
             {
-                //wait for a ready customer, then signal a worker is no longer ready
-                customerReady.acquire();
+                waiting = new Semaphore(10, true);
+                finished = new Semaphore(c, true);
+                workerReady = new Semaphore(w, true);
+                workerFreeList = new Semaphore[w];
+                workerStartList = new Semaphore[w];
+                workerGate = new Semaphore(1, true);
+                scale = new Semaphore(1, true);
+                jobList = new Job[w];
+                Worker[] workers = new Worker[w];
+                Customer[] customers = new Customer[c];
 
-                accessCustomerThreadName.acquire(); //try to acquire Customer's ThreadName, then notify the Customer to read the worker ThreadName. otherwise wait for Customer Threadname to become available
-                custName = customerThreadName;
-                workerThreadName = name;
-                accessCustomerThreadName.release();
+                System.out.println("Simulating Post Office with " + c + " customers and " + w + " postal workers");
 
-                //parse customerThreadName and print service notif
-                int custInt = Integer.parseInt(custName.substring(0,2).trim());
-                int jobIndex = Integer.parseInt(String.valueOf(custName.charAt(custName.length() - 1)));
-                System.out.println("Postal worker " + name + " serving customer " + custInt);
-
-                //Handle all cases of jobs
-                switch (jobIndex)
+                for(int i = 0; i < w; i++)
                 {
-                    case 0 ->
+                    workerFreeList[i] = new Semaphore(1, true);
+                }
+
+                for(int i = 0; i < w; i++)
+                {
+                    workerStartList[i] = new Semaphore(0, true);
+                }
+
+                for(int i = 0; i < w; i++)
+                {
+                    workers[i] = new Worker(i);
+                    workers[i].start();
+                }
+
+                for(int i = 0; i < c; i++)
+                {
+                    customers[i] = new Customer(i);
+                    customers[i].start();
+                }
+
+                while(finished.availablePermits() != 0){}
+
+                for(int i = 0; i < w; i++)
+                {
+                    workers[i].interrupt();
+                }
+
+                for(int i = 0; i < c; i++)
+                {
+                    if(customers[i].isAlive())
                     {
-                        sleep(1000);
-                    }
-                    case 1 ->
-                    {
-                        sleep(1500);
-                    }
-                    case 2 ->
-                    {
-                        //try to get scale access or wait to get it. once access is gained, break loop and sleep for 2s. then release the scales
-                        scales.acquire();
-                        sleep(2000);
-                        scales.release();
+                        customers[i].interrupt();
                     }
                 }
 
-                //print service finished notif, then notify customer that worker is done, then get ready for next customer.
-                System.out.println("Postal worker " + name + " finished serving customer " + custInt);
-                Finished[custInt].release();
             }
-            catch (Exception e)
+
+            class Job
             {
-                throw new RuntimeException(e);
+                final int id;
+                final int jobID;
+
+                Job(int i, int jI)
+                {
+                    id = i;
+                    jobID = jI;
+                }
+
+                public int getId()
+                {
+                    return id;
+                }
+
+                public int getJobID()
+                {
+                    return jobID;
+                }
             }
-        }
-    }
 
-    public void customer()
-    {
-        long start = System.currentTimeMillis();
-        String wrkName = "";
+            class Customer extends Thread
+            {
+                final int id;
 
-        String cName = Thread.currentThread().getName();
-        int name = Integer.parseInt(cName.substring(0,2).trim());
-        int jobIndex = Integer.parseInt(String.valueOf(cName.charAt(cName.length() - 1)));
+                Customer(int id)
+                {
+                    this.id = id;
+                }
 
-        System.out.println("Customer " + name + " created");
+                public void run()
+                {
+                    try
+                    {
+                        //if space in office have one customer enter waiting
+                        System.out.println("Customer " + id + " created");
+                        waiting.acquire();
+                        System.out.println("Customer " + id + " enters postal office");
 
-        try
-        {
-            waiting.acquire();
+                        //grab worker or be disabled until one is available
+                        workerReady.acquire();
 
-            System.out.println("Customer " + name + " enters post office");
-            customerReady.release();
+                        //which worker free?
+                        workerGate.acquire();
+                        int workerIdIndex = whichWorkerFree();
+                        workerFreeList[workerIdIndex].acquire();
+                        workerGate.release();
 
-            workerReady.acquire();
+                        ///random action for customer
+                        Random rand = new Random();
+                        int random = rand.nextInt(3);
+                        jobList[workerIdIndex] = new Job(id, random);
 
-            accessWorkerThreadName.acquire();
-            customerThreadName = cName;
-            wrkName = workerThreadName;
-            accessWorkerThreadName.release();
+                        //Back and forth communication
+                        workerStartList[workerIdIndex].release();
+                        workerFreeList[workerIdIndex].acquire();
+                        switch (random)
+                        {
+                            case 0 ->
+                                    System.out.println("Customer " + id + " asks postal worker " + random + " to buy stamps");
+                            case 1 ->
+                                    System.out.println("Customer " + id + " asks postal worker " + random + " to mail a letter");
+                            case 2 ->
+                                    System.out.println("Customer " + id + " asks postal worker " + random + " to mail a package");
+                        }
 
-            //parse workerThreadName and print service request notif
-            int wrkInt = Integer.parseInt(String.valueOf(wrkName.charAt(0)));
+                        workerStartList[random].release();
+                        workerFreeList[random].acquire();
 
-            System.out.println("Customer " + name + " asks postal worker " + wrkInt + " to " + jobs[jobIndex]);
-            Finished[name].acquire();
-            waiting.release();
+                        //after last signal finish post and end crit state
+                        workerFreeList[random].release();
+                        workerReady.release();
 
-            System.out.println("Customer " + name + " asks postal worker " + wrkInt + " to " + jobs[jobIndex]);
-        }
-        catch (Exception e)
-        {
-            throw new RuntimeException(e);
+                        switch(random)
+                        {
+                            case 0 ->
+                                    System.out.println("Customer " + id + " finished buying stamps");
+                            case 1 ->
+                                    System.out.println("Customer " + id + " finished mailing a letter");
+                            case 2 ->
+                                    System.out.println("Customer " + id + " finished mailing a package");
+                        }
+
+                        waiting.release();
+                        System.out.println("Customer " + id + " leaves post office");
+
+                        //flag customer as finished
+                        finished.acquire();
+                        System.out.println("Joined customer " + id);
+
+                        //join at the end after termination
+                        Thread.currentThread().join();
+                    }
+                    catch(InterruptedException e) {}
+                }
+
+                //return which worker is free
+                public int whichWorkerFree() throws InterruptedException
+                {
+                    for(int i = 0; i < 3; i++)
+                    {
+                        if(workerFreeList[i].availablePermits() > 0)
+                        {
+                            return i;
+                        }
+                    }
+                    //if this exists its very very bad
+                    return -1;
+                }
+            }
+
+            //Manage Workers
+            class Worker extends Thread
+            {
+                final int id;
+
+                Worker(int i)
+                {
+                    id = i;
+                }
+
+                public void run()
+                {
+                    System.out.println("Postal worker " + id + " created");
+                    try
+                    {
+                        while(true)
+                        {
+                            //wait for customer to be ready
+                            workerStartList[id].acquire();
+                            System.out.println("Postal worker " + id + " serving customer " + jobList[id].getId());
+
+                            //tell customer to print and return here
+                            workerFreeList[id].release();
+                            workerStartList[id].acquire();
+
+                            //Scale?
+                            if(jobList[id].getJobID() == 3)
+                            {
+                                scale.acquire();
+                                System.out.println("Scales in use by postal worker " + id);
+
+                                //wait
+                                sleep(rest[2]);
+                                System.out.println("scales released by postal worker " + id);
+                                scale.release();
+                            }
+                            else
+                            {
+                                sleep(rest[jobList[id].getJobID()]);
+                            }
+                            System.out.println("Postal worker " + id + " finished serving customer " + jobList[id].getId());
+
+                            //pass back to customer
+                            workerFreeList[id].release();
+                        }
+                    } catch(InterruptedException e) {}
+                }
+            }
         }
     }
 }
